@@ -1,0 +1,57 @@
+function adjustBufferPoolSize() {
+    print("Analyzing buffer pool usage to determine optimal size...");
+
+    try {
+        // Step 1: Get average and max buffer pool usage for the last 1 hour
+        let result = session.runSql(`
+            SELECT 
+                buffer_pool_size, 
+                AVG(buffer_pool_usage) AS avg_usage,
+                MAX(buffer_pool_usage) AS max_usage
+            FROM 
+                performance_monitoring.mysql_metrics
+            WHERE 
+                timestamp > DATE_SUB(NOW(), INTERVAL 1 HOUR)
+            GROUP BY 
+                buffer_pool_size
+            ORDER BY 
+                avg_usage DESC
+            LIMIT 1;
+        `).fetchAll();
+
+        if (result.length === 0) {
+            print("No buffer pool usage data found in the past 1 hour(s). Aborting.");
+            return;
+        }
+
+        let currentSize = result[0][0]; // buffer_pool_size
+        let avgUsage = result[0][1];    // avg_usage
+        let maxUsage = result[0][2];    // max_usage
+
+        print(`Current Buffer Pool Size: ${currentSize} bytes`);
+        print(`Average Usage: ${avgUsage.toFixed(2)}%`);
+        print(`Max Usage: ${maxUsage.toFixed(2)}%`);
+
+        let newSize = currentSize;
+
+        // Step 2: Determine if a resize is needed
+        if (avgUsage > 85 || maxUsage > 95) {
+            newSize = Math.round(currentSize * 1.2);
+            print(`High usage detected. Increasing buffer pool size to ${newSize} bytes.`);
+        } else if (avgUsage < 40 && maxUsage < 60) {
+            newSize = Math.round(currentSize * 0.8);
+            print(`Low usage detected. Decreasing buffer pool size to ${newSize} bytes.`);
+        } else {
+            print("No change needed. Buffer pool size is within optimal range.");
+            return;
+        }
+
+        // Step 3: Apply new buffer pool size
+        session.runSql(`SET PERSIST innodb_buffer_pool_size = ${newSize}`);
+        print("Buffer pool size updated.");
+    } catch (err) {
+        print("Error adjusting buffer pool size: " + err.message);
+    }
+}
+
+adjustBufferPoolSize();
