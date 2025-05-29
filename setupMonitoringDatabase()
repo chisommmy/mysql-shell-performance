@@ -1,0 +1,140 @@
+// Connect to MySQL (replace with your actual credentials)
+var session = shell.connect('root@localhost:3306');  // Add password if needed like 'root:password@localhost:3306'
+
+function setupMonitoringDatabase() {
+    session.runSql('CREATE DATABASE IF NOT EXISTS performance_monitoring');
+    session.runSql('USE performance_monitoring');
+
+    // Create mysql_metrics table
+    session.runSql(`
+        CREATE TABLE IF NOT EXISTS mysql_metrics (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            buffer_pool_usage DECIMAL(5,2),
+            buffer_pool_size BIGINT,
+            threads_connected INT,
+            threads_running INT,
+            queries_per_second DECIMAL(10,2),
+            slow_queries INT,
+            table_open_cache_hits BIGINT,
+            table_open_cache_misses BIGINT,
+            innodb_row_lock_waits BIGINT,
+            innodb_row_lock_time_avg DECIMAL(10,2)
+        )
+    `);
+
+    // Create config_changes table
+    session.runSql(`
+        CREATE TABLE IF NOT EXISTS config_changes (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            parameter_name VARCHAR(100),
+            old_value VARCHAR(100),
+            new_value VARCHAR(100),
+            change_reason VARCHAR(255)
+        )
+    `);
+
+    print("✅ Monitoring database and tables created successfully.\n");
+    return true;
+}
+
+function collectMySQLMetrics() {
+    print("📊 Collecting MySQL performance metrics...\n");
+
+    // Buffer pool usage and size
+    var bufferPoolResult = session.runSql(`
+        SELECT 
+            (pages_data * page_size) / (pages_total * page_size) * 100 AS buffer_pool_usage,
+            (pages_total * page_size) AS buffer_pool_size
+        FROM 
+            (SELECT variable_value AS pages_total FROM performance_schema.global_status WHERE variable_name = 'Innodb_buffer_pool_pages_total') AS total,
+            (SELECT variable_value AS pages_data FROM performance_schema.global_status WHERE variable_name = 'Innodb_buffer_pool_pages_data') AS data,
+            (SELECT variable_value AS page_size FROM performance_schema.global_status WHERE variable_name = 'Innodb_page_size') AS page
+    `);
+    var bufferPoolRow = bufferPoolResult.fetchOne();
+    var bufferPoolUsage = parseFloat(bufferPoolRow[0]).toFixed(2);
+    var bufferPoolSize = parseInt(bufferPoolRow[1]);
+
+    // Threads connected and running
+    var threadsResult = session.runSql(`
+        SELECT 
+            (SELECT variable_value FROM performance_schema.global_status WHERE variable_name = 'Threads_connected') AS threads_connected,
+            (SELECT variable_value FROM performance_schema.global_status WHERE variable_name = 'Threads_running') AS threads_running
+    `);
+    var threadsRow = threadsResult.fetchOne();
+    var threadsConnected = parseInt(threadsRow[0]);
+    var threadsRunning = parseInt(threadsRow[1]);
+
+    // Query and cache metrics
+    var queryResult = session.runSql(`
+        SELECT 
+            (SELECT variable_value FROM performance_schema.global_status WHERE variable_name = 'Queries') AS total_queries,
+            (SELECT variable_value FROM performance_schema.global_status WHERE variable_name = 'Slow_queries') AS slow_queries,
+            (SELECT variable_value FROM performance_schema.global_status WHERE variable_name = 'Table_open_cache_hits') AS cache_hits,
+            (SELECT variable_value FROM performance_schema.global_status WHERE variable_name = 'Table_open_cache_misses') AS cache_misses
+    `);
+    var queryRow = queryResult.fetchOne();
+    var totalQueries = parseInt(queryRow[0]);
+    var slowQueries = parseInt(queryRow[1]);
+    var cacheHits = parseInt(queryRow[2]);
+    var cacheMisses = parseInt(queryRow[3]);
+
+    // Lock info
+    var lockResult = session.runSql(`
+        SELECT 
+            (SELECT variable_value FROM performance_schema.global_status WHERE variable_name = 'Innodb_row_lock_waits') AS lock_waits,
+            (SELECT variable_value FROM performance_schema.global_status WHERE variable_name = 'Innodb_row_lock_time_avg') AS lock_time_avg
+    `);
+    var lockRow = lockResult.fetchOne();
+    var lockWaits = parseInt(lockRow[0]);
+    var lockTimeAvg = parseFloat(lockRow[1]).toFixed(2);
+
+    // Calculate QPS
+    var queriesPerSecond = 0;
+    var previousQueriesResult = session.runSql(`
+        SELECT queries_per_second, UNIX_TIMESTAMP(timestamp) as measure_time
+        FROM performance_monitoring.mysql_metrics
+        ORDER BY id DESC LIMIT 1
+    `);
+    var previousQueriesRow = previousQueriesResult.fetchOne();
+    if (previousQueriesRow) {
+        var previousTimestamp = parseInt(previousQueriesRow[1]);
+        var currentTimestamp = Math.floor(Date.now() / 1000);
+        var timeDiff = currentTimestamp - previousTimestamp;
+        if (timeDiff > 0) {
+            queriesPerSecond = ((totalQueries - previousQueriesRow[0]) / timeDiff).toFixed(2);
+        }
+    }
+
+    // Insert into table
+    session.runSql(`
+        INSERT INTO performance_monitoring.mysql_metrics (
+            buffer_pool_usage, buffer_pool_size, threads_connected, threads_running,
+            queries_per_second, slow_queries, table_open_cache_hits, table_open_cache_misses,
+            innodb_row_lock_waits, innodb_row_lock_time_avg
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+        bufferPoolUsage, bufferPoolSize, threadsConnected, threadsRunning,
+        queriesPerSecond, slowQueries, cacheHits, cacheMisses,
+        lockWaits, lockTimeAvg
+    ]);
+
+    // Print summary
+    print("✅ Metrics collected and stored successfully:\n");
+    print("• Buffer Pool Usage: " + bufferPoolUsage + "%");
+    print("• Buffer Pool Size: " + (bufferPoolSize / (1024 * 1024 * 1024)).toFixed(2) + " GB");
+    print("• Threads Connected: " + threadsConnected);
+    print("• Threads Running: " + threadsRunning);
+    print("• Queries Per Second: " + queriesPerSecond);
+    print("• Slow Queries: " + slowQueries);
+    print("• Table Cache Hit Ratio: " + ((cacheHits / (cacheHits + cacheMisses)) * 100).toFixed(2) + "%");
+    print("• Row Lock Waits: " + lockWaits);
+    print("• Avg Row Lock Time: " + lockTimeAvg + " ms\n");
+
+    return true;
+}
+
+// Run both functions
+setupMonitoringDatabase();
+collectMySQLMetrics();
