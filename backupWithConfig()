@@ -1,0 +1,154 @@
+function backupWithConfig() {
+    var timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    var backupDir = '/tmp/mysql_backup_' + timestamp;
+    
+    print("Starting backup with configuration tracking...");
+    print("Backup directory: " + backupDir);
+    
+    // Create backup directory using shell command
+    shell.run('mkdir -p ' + backupDir);
+    
+    // Backup the database using MySQL Shell's built-in utility
+    util.dumpInstance(backupDir + '/data', {
+        consistent: true,
+        compression: "gzip"
+    });
+
+    // Export current configuration
+    var configFile = backupDir + '/mysql_config.txt';
+    var configFileHandle = os.file.open(configFile, 'w');
+    
+    var configParams = [
+        'innodb_buffer_pool_size',
+        'innodb_buffer_pool_instances',
+        'innodb_log_file_size',
+        'innodb_flush_log_at_trx_commit',
+        'innodb_flush_method',
+        'innodb_io_capacity',
+        'innodb_io_capacity_max',
+        'table_open_cache',
+        'table_definition_cache',
+        'max_connections',
+        'thread_cache_size',
+        'join_buffer_size',
+        'sort_buffer_size',
+        'read_buffer_size',
+        'read_rnd_buffer_size',
+        'key_buffer_size'
+    ];
+    
+    configFileHandle.write("MySQL Configuration Backup - " + timestamp + "\n");
+    configFileHandle.write("=".repeat(50) + "\n\n");
+    
+    for (var i = 0; i < configParams.length; i++) {
+        var param = configParams[i];
+        var result = session.runSql("SELECT @@GLOBAL." + param);
+        var value = result.fetchOne()[0];
+        configFileHandle.write(param + " = " + value + "\n");
+    }
+    
+    configFileHandle.close();
+
+    // Export performance metrics history
+    var metricsFile = backupDir + '/performance_metrics.csv';
+    var metricsFileHandle = os.file.open(metricsFile, 'w');
+    
+    metricsFileHandle.write("timestamp,buffer_pool_usage,threads_connected,threads_running,slow_queries,table_open_cache_hits,table_open_cache_misses\n");
+    
+    var metricsResult = session.runSql(`
+        SELECT 
+            timestamp,
+            buffer_pool_usage,
+            threads_connected,
+            threads_running,
+            slow_queries,
+            table_open_cache_hits,
+            table_open_cache_misses
+        FROM 
+            performance_monitoring.mysql_metrics
+        ORDER BY 
+            timestamp
+    `);
+    
+    var row;
+    while (row = metricsResult.fetchOne()) {
+        metricsFileHandle.write(
+            row[0] + "," + 
+            row[1] + "," + 
+            row[2] + "," + 
+            row[3] + "," + 
+            row[4] + "," + 
+            row[5] + "," + 
+            row[6] + "\n"
+        );
+    }
+    
+    metricsFileHandle.close();
+
+    // Export configuration changes history
+    var changesFile = backupDir + '/config_changes.csv';
+    var changesFileHandle = os.file.open(changesFile, 'w');
+    
+    changesFileHandle.write("timestamp,parameter_name,old_value,new_value,change_reason\n");
+    
+    var changesResult = session.runSql(`
+        SELECT 
+            timestamp,
+            parameter_name,
+            old_value,
+            new_value,
+            change_reason
+        FROM 
+            performance_monitoring.config_changes
+        ORDER BY 
+            timestamp
+    `);
+    
+    while (row = changesResult.fetchOne()) {
+        // Replace commas in change_reason to avoid CSV issues
+        var safeReason = row[4] ? row[4].replace(/,/g, ';') : '';
+        changesFileHandle.write(
+            row[0] + "," + 
+            row[1] + "," + 
+            row[2] + "," + 
+            row[3] + "," + 
+            safeReason + "\n"
+        );
+    }
+    
+    changesFileHandle.close();
+
+    // Export database size information
+    var sizeFile = backupDir + '/database_sizes.csv';
+    var sizeFileHandle = os.file.open(sizeFile, 'w');
+    
+    sizeFileHandle.write("database_name,size_mb\n");
+    
+    var sizeResult = session.runSql(`
+        SELECT 
+            table_schema AS database_name,
+            ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS size_mb
+        FROM 
+            information_schema.tables
+        GROUP BY 
+            table_schema
+        ORDER BY 
+            size_mb DESC
+    `);
+    
+    while (row = sizeResult.fetchOne()) {
+        sizeFileHandle.write(row[0] + "," + row[1] + "\n");
+    }
+    
+    sizeFileHandle.close();
+
+    print("Backup completed successfully!");
+    print("Database data: " + backupDir + '/data');
+    print("Configuration: " + backupDir + '/mysql_config.txt');
+    print("Performance metrics: " + backupDir + '/performance_metrics.csv');
+    print("Configuration changes: " + backupDir + '/config_changes.csv');
+    print("Database sizes: " + backupDir + '/database_sizes.csv');
+    
+    return backupDir;
+}
+backupWithConfig();
