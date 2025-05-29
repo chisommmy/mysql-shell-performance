@@ -1,0 +1,93 @@
+// Comprehensive Automation Script for MySQL Shell (\js mode)
+
+function automatePerformanceTuning(config) {
+    // Default configuration
+    config = config || {};
+    config.monitoringInterval = config.monitoringInterval || 300;  // 5 minutes
+    config.tuningInterval = config.tuningInterval || 3600;         // 1 hour
+    config.reportingInterval = config.reportingInterval || 86400;  // 1 day
+    config.backupInterval = config.backupInterval || 604800;       // 1 week
+
+    print("Starting comprehensive MySQL performance automation...");
+    print("Monitoring interval: " + config.monitoringInterval + " seconds");
+    print("Tuning interval: " + config.tuningInterval + " seconds");
+    print("Reporting interval: " + config.reportingInterval + " seconds");
+    print("Backup interval: " + config.backupInterval + " seconds");
+
+    // Ensure monitoring database exists
+    print("\nSetting up monitoring database...");
+    if (!setupMonitoringDatabase()) {
+        print("Failed to set up monitoring database. Exiting automation.");
+        return;
+    }
+
+    // Initialize timers
+    var lastMonitoringTime = 0;
+    var lastTuningTime = 0;
+    var lastReportingTime = 0;
+    var lastBackupTime = 0;
+
+    // Main automation loop
+    print("\nAutomation running. Press Ctrl+C to stop.");
+
+    while (true) {
+        try {
+            var currentTime = Math.floor(Date.now() / 1000);
+
+            // Collect performance metrics
+            if (currentTime - lastMonitoringTime >= config.monitoringInterval) {
+                print("\n" + new Date().toISOString() + " - Collecting performance metrics...");
+                collectMySQLMetrics();
+                lastMonitoringTime = currentTime;
+            }
+
+            // Perform tuning
+            if (currentTime - lastTuningTime >= config.tuningInterval) {
+                print("\n" + new Date().toISOString() + " - Performing performance tuning...");
+
+                var bufferPoolChanged = adjustBufferPoolSize();
+                var tableCacheChanged = adjustTableOpenCache();
+
+                if (bufferPoolChanged || tableCacheChanged) {
+                    print("Configuration changes were made. Collecting new metrics...");
+                    collectMySQLMetrics();
+                }
+
+                lastTuningTime = currentTime;
+            }
+
+            // Generate performance reports
+            if (currentTime - lastReportingTime >= config.reportingInterval) {
+                print("\n" + new Date().toISOString() + " - Generating performance report...");
+                analyzePerformanceTrends(7);  // Analyze past 7 days
+                lastReportingTime = currentTime;
+            }
+
+            // Perform backups
+            if (currentTime - lastBackupTime >= config.backupInterval) {
+                print("\n" + new Date().toISOString() + " - Performing backup with configuration tracking...");
+                backupWithConfig();
+                lastBackupTime = currentTime;
+            }
+
+            // Sleep for 1 second to reduce CPU load
+            os.sleep(1);
+
+        } catch (err) {
+            print("Error occurred during automation: " + err.message);
+            // Optional: write error to log table
+            os.sleep(5);  // wait before retrying
+        }
+    }
+}
+
+// Start automation with default intervals
+automatePerformanceTuning();
+
+// Or use custom intervals:
+// automatePerformanceTuning({
+//     monitoringInterval: 60,    // Collect every minute
+//     tuningInterval: 1800,      // Tune every 30 minutes
+//     reportingInterval: 43200,  // Report every 12 hours
+//     backupInterval: 259200     // Backup every 3 days
+// });
