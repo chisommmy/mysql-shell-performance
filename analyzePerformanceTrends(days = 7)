@@ -1,0 +1,150 @@
+function analyzePerformanceTrends(days = 7) {
+    print("Analyzing performance trends over the past " + days + " days...");
+
+    // Connect to the schema
+    session.runSql("USE performance_monitoring");
+
+    // 1. Buffer Pool Usage Trends
+    var bufferPoolResult = session.runSql(`
+        SELECT 
+            DATE(timestamp) AS date,
+            AVG(buffer_pool_usage) AS avg_usage,
+            MAX(buffer_pool_usage) AS max_usage,
+            MIN(buffer_pool_usage) AS min_usage
+        FROM mysql_metrics
+        WHERE timestamp > DATE_SUB(NOW(), INTERVAL ? DAY)
+        GROUP BY DATE(timestamp)
+        ORDER BY date
+    `, [days]);
+
+    print("\nBuffer Pool Usage Trends:");
+    print("Date        | Avg Usage | Min Usage | Max Usage");
+    print("------------|-----------|-----------|-----------");
+
+    var hasData = false;
+    while ((row = bufferPoolResult.fetchOne()) !== null) {
+        hasData = true;
+        print(
+            row[0] + " | " +
+            parseFloat(row[1]).toFixed(2).padStart(9) + "% | " +
+            parseFloat(row[3]).toFixed(2).padStart(9) + "% | " +
+            parseFloat(row[2]).toFixed(2).padStart(9) + "%"
+        );
+    }
+
+    if (!hasData) print("No buffer pool usage data available for the specified period.");
+
+    // 2. Configuration Change Summary
+    var configResult = session.runSql(`
+        SELECT 
+            DATE(timestamp) AS date,
+            parameter_name,
+            COUNT(*) AS change_count
+        FROM config_changes
+        WHERE timestamp > DATE_SUB(NOW(), INTERVAL ? DAY)
+            AND old_value != new_value
+        GROUP BY DATE(timestamp), parameter_name
+        ORDER BY date, parameter_name
+    `, [days]);
+
+    print("\nConfiguration Change Summary:");
+    print("Date        | Parameter               | Changes");
+    print("------------|-------------------------|--------");
+
+    hasData = false;
+    while ((row = configResult.fetchOne()) !== null) {
+        hasData = true;
+        print(
+            row[0] + " | " + 
+            row[1].padEnd(25) + " | " + 
+            row[2]
+        );
+    }
+
+    if (!hasData) print("No configuration changes recorded for the specified period.");
+
+    // 3. Slow Query and Connection Trends
+    var slowQueryResult = session.runSql(`
+        SELECT 
+            DATE(timestamp) AS date,
+            SUM(slow_queries) AS total_slow_queries,
+            AVG(threads_connected) AS avg_connections
+        FROM mysql_metrics
+        WHERE timestamp > DATE_SUB(NOW(), INTERVAL ? DAY)
+        GROUP BY DATE(timestamp)
+        ORDER BY date
+    `, [days]);
+
+    print("\nSlow Query and Connection Trends:");
+    print("Date        | Slow Queries | Avg Connections");
+    print("------------|---------------|----------------");
+
+    hasData = false;
+    while ((row = slowQueryResult.fetchOne()) !== null) {
+        hasData = true;
+        print(
+            row[0] + " | " + 
+            row[1].toString().padEnd(13) + " | " + 
+            parseFloat(row[2]).toFixed(1)
+        );
+    }
+
+    if (!hasData) print("No slow query data available for the specified period.");
+
+    // 4. Most Recent Configuration Changes (10)
+    var recentChangesResult = session.runSql(`
+        SELECT 
+            timestamp,
+            parameter_name,
+            old_value,
+            new_value,
+            change_reason
+        FROM config_changes
+        WHERE timestamp > DATE_SUB(NOW(), INTERVAL ? DAY)
+            AND old_value != new_value
+        ORDER BY timestamp DESC
+        LIMIT 10
+    `, [days]);
+
+    print("\nRecent Configuration Changes (Last 10):");
+    print("Timestamp           | Parameter               | Old Value     | New Value     | Reason");
+    print("---------------------|-------------------------|---------------|---------------|------------------");
+
+    hasData = false;
+    while ((row = recentChangesResult.fetchOne()) !== null) {
+        hasData = true;
+        print(
+            row[0] + " | " +
+            row[1].padEnd(25) + " | " +
+            row[2].toString().padEnd(13) + " | " +
+            row[3].toString().padEnd(13) + " | " +
+            row[4]
+        );
+    }
+
+    if (!hasData) print("No recent configuration changes recorded for the specified period.");
+
+    // 5. Dashboard Query Output
+    print("\nSQL Queries for Dashboard Creation:");
+    print("----------------------------------");
+    print("1. Buffer Pool Usage Over Time:");
+    print("```sql");
+    print(`
+SELECT 
+    DATE_FORMAT(timestamp, '%Y-%m-%d %H:00:00') AS hour,
+    AVG(buffer_pool_usage) AS avg_usage
+FROM 
+    performance_monitoring.mysql_metrics
+WHERE 
+    timestamp > DATE_SUB(NOW(), INTERVAL 7 DAY)
+GROUP BY 
+    DATE_FORMAT(timestamp, '%Y-%m-%d %H:00:00')
+ORDER BY 
+    hour;
+    `);
+    print("```");
+
+    return true;
+}
+
+analyzePerformanceTrends();
