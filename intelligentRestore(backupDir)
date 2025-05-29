@@ -1,0 +1,182 @@
+function intelligentRestore(backupDir) {
+    print("Starting intelligent restore from: " + backupDir);
+    
+    // First, analyze the backup's configuration
+    var configFile = backupDir + '/mysql_config.txt';
+    var configFileHandle = os.file.open(configFile, 'r');
+    var configContent = configFileHandle.readAll();
+    configFileHandle.close();
+    
+    var configLines = configContent.split('\n');
+    var backupConfig = {};
+    
+    // Parse the configuration file
+    for (var i = 0; i < configLines.length; i++) {
+        var line = configLines[i].trim();
+        if (line.indexOf(' = ') > 0) {
+            var parts = line.split(' = ');
+            backupConfig[parts[0]] = parts[1];
+        }
+    }
+    
+    print("Backup configuration analyzed:");
+    print("- Buffer pool size: " + (parseInt(backupConfig.innodb_buffer_pool_size) / (1024 * 1024 * 1024)).toFixed(2) + " GB");
+    print("- Max connections: " + backupConfig.max_connections);
+    print("- Table open cache: " + backupConfig.table_open_cache);
+    
+    // Analyze database sizes from the backup
+    var sizeFile = backupDir + '/database_sizes.csv';
+    var sizeFileHandle = os.file.open(sizeFile, 'r');
+    var sizeContent = sizeFileHandle.readAll();
+    sizeFileHandle.close();
+    
+    var sizeLines = sizeContent.split('\n');
+    var totalDatabaseSizeMB = 0;
+    
+    for (var i = 1; i < sizeLines.length; i++) {
+        var line = sizeLines[i].trim();
+        if (line) {
+            var parts = line.split(',');
+            totalDatabaseSizeMB += parseFloat(parts[1]);
+        }
+    }
+    
+    print("Total database size: " + totalDatabaseSizeMB.toFixed(2) + " MB (" + (totalDatabaseSizeMB / 1024).toFixed(2) + " GB)");
+    
+    // Example server specs (could be retrieved from OS in real cases)
+    var currentServerMemoryGB = 16;
+    var currentServerCores = 8;
+    var currentServerDiskType = "SSD";
+    
+    print("\nCurrent server capabilities:");
+    print("- Memory: " + currentServerMemoryGB + " GB");
+    print("- CPU cores: " + currentServerCores);
+    print("- Disk type: " + currentServerDiskType);
+    
+    // Calculate recommended config
+    var recommendedConfig = {};
+    var databaseSizeGB = totalDatabaseSizeMB / 1024;
+    var recommendedBufferPoolGB = Math.min(
+        currentServerMemoryGB * 0.75,
+        Math.max(databaseSizeGB * 1.2, 1)
+    );
+    recommendedConfig.innodb_buffer_pool_size = Math.round(recommendedBufferPoolGB * 1024 * 1024 * 1024);
+    recommendedConfig.innodb_buffer_pool_instances = Math.min(Math.max(Math.round(recommendedBufferPoolGB), 1), 8);
+    
+    if (currentServerDiskType === "SSD") {
+        recommendedConfig.innodb_io_capacity = 2000;
+        recommendedConfig.innodb_io_capacity_max = 4000;
+    } else {
+        recommendedConfig.innodb_io_capacity = 200;
+        recommendedConfig.innodb_io_capacity_max = 400;
+    }
+    
+    var connectionMemoryMB = 10;
+    var maxConnectionsFromMemory = Math.floor((currentServerMemoryGB * 1024 * 0.2) / connectionMemoryMB);
+    var maxConnectionsFromCPU = currentServerCores * 25;
+    recommendedConfig.max_connections = Math.min(maxConnectionsFromMemory, maxConnectionsFromCPU);
+    recommendedConfig.thread_cache_size = Math.round(recommendedConfig.max_connections * 0.25);
+    
+    var tableEstimate = totalDatabaseSizeMB / 10;
+    recommendedConfig.table_open_cache = Math.min(Math.max(Math.round(tableEstimate * 1.5), 400), 2000);
+    
+    print("\nRecommended configuration for this server:");
+    print("- Buffer pool size: " + (recommendedConfig.innodb_buffer_pool_size / (1024 * 1024 * 1024)).toFixed(2) + " GB");
+    print("- Buffer pool instances: " + recommendedConfig.innodb_buffer_pool_instances);
+    print("- InnoDB IO capacity: " + recommendedConfig.innodb_io_capacity);
+    print("- InnoDB IO capacity max: " + recommendedConfig.innodb_io_capacity_max);
+    print("- Max connections: " + recommendedConfig.max_connections);
+    print("- Thread cache size: " + recommendedConfig.thread_cache_size);
+    print("- Table open cache: " + recommendedConfig.table_open_cache);
+    
+    // Compare with backup configuration
+    print("\nComparison with backup configuration:");
+    print("Parameter               | Backup Value | Recommended Value | Reason");
+    print("------------------------|--------------|-------------------|------------------");
+    
+    var compareParams = [
+        { name: "innodb_buffer_pool_size", format: v => (parseInt(v) / (1024 * 1024 * 1024)).toFixed(2) + " GB" },
+        { name: "innodb_buffer_pool_instances", format: v => v },
+        { name: "innodb_io_capacity", format: v => v },
+        { name: "innodb_io_capacity_max", format: v => v },
+        { name: "max_connections", format: v => v },
+        { name: "thread_cache_size", format: v => v },
+        { name: "table_open_cache", format: v => v }
+    ];
+    
+    for (var i = 0; i < compareParams.length; i++) {
+        var param = compareParams[i];
+        var backupValue = backupConfig[param.name] || "N/A";
+        var recommendedValue = recommendedConfig[param.name];
+        var reason = getReasonForChange(param.name, backupValue, recommendedValue);
+        
+        print(
+            param.name.padEnd(24) + " | " + 
+            param.format(backupValue).toString().padEnd(12) + " | " + 
+            param.format(recommendedValue).toString().padEnd(17) + " | " + 
+            reason
+        );
+    }
+    
+    // Confirm restore
+    print("\nDo you want to proceed with the restore using these settings? (yes/no)");
+    var answer = os.stdin.readLine().trim().toLowerCase();
+    
+    if (answer !== 'yes') {
+        print("Restore cancelled.");
+        return false;
+    }
+    
+    // Restore
+    print("\nRestoring database data...");
+    util.loadDump(backupDir + '/data', {
+        ignoreVersion: true,
+        resetProgress: true
+    });
+    
+    // Apply new config
+    print("\nApplying recommended configuration...");
+    for (var param in recommendedConfig) {
+        session.runSql("SET GLOBAL " + param + " = ?", [recommendedConfig[param]]);
+        print("Set " + param + " to " + recommendedConfig[param]);
+    }
+    
+    // Log config changes
+    for (var param in recommendedConfig) {
+        var oldValue = backupConfig[param] || "unknown";
+        var newValue = recommendedConfig[param];
+        var reason = getReasonForChange(param, oldValue, newValue);
+        
+        session.runSql(`
+            INSERT INTO performance_monitoring.config_changes 
+            (parameter_name, old_value, new_value, change_reason)
+            VALUES (?, ?, ?, ?)
+        `, [param, oldValue, newValue, reason]);
+    }
+    
+    print("\nRestore completed with adaptive configuration.");
+    return true;
+}
+
+// Helper function
+function getReasonForChange(param, oldVal, newVal) {
+    switch (param) {
+        case "innodb_buffer_pool_size":
+            return "Adjusted for memory and DB size";
+        case "innodb_buffer_pool_instances":
+            return "Balanced with buffer pool size";
+        case "innodb_io_capacity":
+        case "innodb_io_capacity_max":
+            return "Adjusted for SSD or HDD";
+        case "max_connections":
+            return "Based on memory and CPU";
+        case "thread_cache_size":
+            return "Scaled from max connections";
+        case "table_open_cache":
+            return "Estimated from DB size";
+        default:
+            return "Optimized for current server";
+    }
+}
+// Example: run the function with a specific backup directory
+intelligentRestore(backupDir);
