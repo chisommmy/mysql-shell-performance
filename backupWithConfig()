@@ -1,14 +1,15 @@
 function backupWithConfig() {
+    var session = shell.getSession();
     var timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     var backupDir = '/tmp/mysql_backup_' + timestamp;
-    
+
     print("Starting backup with configuration tracking...");
     print("Backup directory: " + backupDir);
     
-    // Create backup directory using shell command
+    // Create backup directory
     shell.run('mkdir -p ' + backupDir);
-    
-    // Backup the database using MySQL Shell's built-in utility
+
+    // Backup the database using util.dumpInstance
     util.dumpInstance(backupDir + '/data', {
         consistent: true,
         compression: "gzip"
@@ -16,8 +17,8 @@ function backupWithConfig() {
 
     // Export current configuration
     var configFile = backupDir + '/mysql_config.txt';
-    var configFileHandle = os.file.open(configFile, 'w');
-    
+    var configFileHandle = shell.openFile(configFile, 'w');
+
     var configParams = [
         'innodb_buffer_pool_size',
         'innodb_buffer_pool_instances',
@@ -36,25 +37,25 @@ function backupWithConfig() {
         'read_rnd_buffer_size',
         'key_buffer_size'
     ];
-    
+
     configFileHandle.write("MySQL Configuration Backup - " + timestamp + "\n");
     configFileHandle.write("=".repeat(50) + "\n\n");
-    
+
     for (var i = 0; i < configParams.length; i++) {
         var param = configParams[i];
         var result = session.runSql("SELECT @@GLOBAL." + param);
         var value = result.fetchOne()[0];
         configFileHandle.write(param + " = " + value + "\n");
     }
-    
+
     configFileHandle.close();
 
     // Export performance metrics history
     var metricsFile = backupDir + '/performance_metrics.csv';
-    var metricsFileHandle = os.file.open(metricsFile, 'w');
-    
+    var metricsFileHandle = shell.openFile(metricsFile, 'w');
+
     metricsFileHandle.write("timestamp,buffer_pool_usage,threads_connected,threads_running,slow_queries,table_open_cache_hits,table_open_cache_misses\n");
-    
+
     var metricsResult = session.runSql(`
         SELECT 
             timestamp,
@@ -69,9 +70,9 @@ function backupWithConfig() {
         ORDER BY 
             timestamp
     `);
-    
+
     var row;
-    while (row = metricsResult.fetchOne()) {
+    while ((row = metricsResult.fetchOne())) {
         metricsFileHandle.write(
             row[0] + "," + 
             row[1] + "," + 
@@ -82,15 +83,15 @@ function backupWithConfig() {
             row[6] + "\n"
         );
     }
-    
+
     metricsFileHandle.close();
 
     // Export configuration changes history
     var changesFile = backupDir + '/config_changes.csv';
-    var changesFileHandle = os.file.open(changesFile, 'w');
-    
+    var changesFileHandle = shell.openFile(changesFile, 'w');
+
     changesFileHandle.write("timestamp,parameter_name,old_value,new_value,change_reason\n");
-    
+
     var changesResult = session.runSql(`
         SELECT 
             timestamp,
@@ -103,27 +104,25 @@ function backupWithConfig() {
         ORDER BY 
             timestamp
     `);
-    
-    while (row = changesResult.fetchOne()) {
-        // Replace commas in change_reason to avoid CSV issues
-        var safeReason = row[4] ? row[4].replace(/,/g, ';') : '';
+
+    while ((row = changesResult.fetchOne())) {
         changesFileHandle.write(
             row[0] + "," + 
             row[1] + "," + 
             row[2] + "," + 
             row[3] + "," + 
-            safeReason + "\n"
+            row[4].replace(",", ";") + "\n"
         );
     }
-    
+
     changesFileHandle.close();
 
     // Export database size information
     var sizeFile = backupDir + '/database_sizes.csv';
-    var sizeFileHandle = os.file.open(sizeFile, 'w');
-    
+    var sizeFileHandle = shell.openFile(sizeFile, 'w');
+
     sizeFileHandle.write("database_name,size_mb\n");
-    
+
     var sizeResult = session.runSql(`
         SELECT 
             table_schema AS database_name,
@@ -135,20 +134,22 @@ function backupWithConfig() {
         ORDER BY 
             size_mb DESC
     `);
-    
-    while (row = sizeResult.fetchOne()) {
+
+    while ((row = sizeResult.fetchOne())) {
         sizeFileHandle.write(row[0] + "," + row[1] + "\n");
     }
-    
+
     sizeFileHandle.close();
 
+    // Summary
     print("Backup completed successfully!");
     print("Database data: " + backupDir + '/data');
     print("Configuration: " + backupDir + '/mysql_config.txt');
     print("Performance metrics: " + backupDir + '/performance_metrics.csv');
     print("Configuration changes: " + backupDir + '/config_changes.csv');
     print("Database sizes: " + backupDir + '/database_sizes.csv');
-    
+
     return backupDir;
 }
+
 backupWithConfig();
