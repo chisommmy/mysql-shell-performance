@@ -1,2 +1,3 @@
 # mysql-shell-performance
 Scripts for MySQL Shell configuration management
+NOTE: SOME PARTS OF THE CODE USE PLACEHOLDERS, MAKE SURE TO REPLACE THOSE WITH CODES TO YOUR OWN SPECIFIC ENVIRONMENT.
